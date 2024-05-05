@@ -13,6 +13,22 @@
 
 #define MAXARGS 10
 
+// 这个shell是实现了pipe, list, redir, block的
+// 这可以理解为"运算符", 它们之间是有优先级的
+// shell的输入cmd也可以用一个文法来表示, 这里相当于手写了parser 
+// malloc的内存没free???
+
+// 盲猜文法( line是起点 ):
+// line := pipe & | pipe ; line
+// pipe := exec | pipe
+// exec := ( block ) | ...        exec有点复杂, 涉及重定向, 应该是最小单元
+// block := line
+
+
+// 这里通过对 cmd* 的强转来实现类似 tagged union 的效果
+// 保持参数的一致性 => runcmd => 类似OOP的派生
+// cmd 就是个tag, 或者说base class, 像极了AST, AST的父子关系就像fork的父子关系
+// 第一次见这种写法, 妙啊, 果然思想是共通的
 struct cmd {
   int type;
 };
@@ -20,14 +36,14 @@ struct cmd {
 struct execcmd {
   int type;
   char *argv[MAXARGS];
-  char *eargv[MAXARGS];
+  char *eargv[MAXARGS];// end of argv每个参数结束的位置
 };
 
 struct redircmd {
   int type;
   struct cmd *cmd;
   char *file;
-  char *efile;
+  char *efile;// end of file 同上
   int mode;
   int fd;
 };
@@ -52,7 +68,7 @@ struct backcmd {
 int fork1(void);  // Fork but panics on failure.
 void panic(char*);
 struct cmd *parsecmd(char*);
-void runcmd(struct cmd*) __attribute__((noreturn));
+void runcmd(struct cmd*) __attribute__((noreturn));// GCC扩展语法, 标记不会返回
 
 // Execute cmd.  Never returns.
 void
@@ -82,7 +98,9 @@ runcmd(struct cmd *cmd)
 
   case REDIR:
     rcmd = (struct redircmd*)cmd;
+    // 关掉对应的fd( 0/1 )
     close(rcmd->fd);
+    // open会保证最小的可用的fd被分配
     if(open(rcmd->file, rcmd->mode) < 0){
       fprintf(2, "open %s failed\n", rcmd->file);
       exit(1);
@@ -94,12 +112,16 @@ runcmd(struct cmd *cmd)
     lcmd = (struct listcmd*)cmd;
     if(fork1() == 0)
       runcmd(lcmd->left);
+
+    // 从左到右一次运行结束
+    // eg. (echo hello; echo world) > output.txt
     wait(0);
     runcmd(lcmd->right);
     break;
 
   case PIPE:
     pcmd = (struct pipecmd*)cmd;
+    // pipe的左右实际是并发的, 这比临时文件的方案更好
     if(pipe(p) < 0)
       panic("pipe");
     if(fork1() == 0){
@@ -134,6 +156,7 @@ runcmd(struct cmd *cmd)
 int
 getcmd(char *buf, int nbuf)
 {
+  // stderr?
   write(2, "$ ", 2);
   memset(buf, 0, nbuf);
   gets(buf, nbuf);
@@ -149,6 +172,7 @@ main(void)
   int fd;
 
   // Ensure that three file descriptors are open.
+  // 这里是打开的设备????
   while((fd = open("console", O_RDWR)) >= 0){
     if(fd >= 3){
       close(fd);
@@ -158,6 +182,7 @@ main(void)
 
   // Read and run input commands.
   while(getcmd(buf, sizeof(buf)) >= 0){
+    // shell必须单独处理 cd 命令, 因为这也会改变shell自己的dir
     if(buf[0] == 'c' && buf[1] == 'd' && buf[2] == ' '){
       // Chdir must be called by the parent, not the child.
       buf[strlen(buf)-1] = 0;  // chop \n
@@ -165,8 +190,14 @@ main(void)
         fprintf(2, "cannot cd %s\n", buf+3);
       continue;
     }
+
+    // 其他命令
+    // 代码风格, parse -> struct -> run
+    // 子进程完全交给run来exit
     if(fork1() == 0)
       runcmd(parsecmd(buf));
+
+    // 只能前台执行, 等待结束
     wait(0);
   }
   exit(0);
@@ -263,6 +294,12 @@ backcmd(struct cmd *subcmd)
 char whitespace[] = " \t\r\n\v";
 char symbols[] = "<|>&;()";
 
+
+/**
+ * eq: end of q
+ * 
+ * return: 下个token类型
+*/
 int
 gettoken(char **ps, char *es, char **q, char **eq)
 {
@@ -272,8 +309,10 @@ gettoken(char **ps, char *es, char **q, char **eq)
   s = *ps;
   while(s < es && strchr(whitespace, *s))
     s++;
+
   if(q)
     *q = s;
+
   ret = *s;
   switch(*s){
   case 0:
@@ -287,6 +326,7 @@ gettoken(char **ps, char *es, char **q, char **eq)
     s++;
     break;
   case '>':
+    // 检验: >> 
     s++;
     if(*s == '>'){
       ret = '+';
@@ -294,27 +334,39 @@ gettoken(char **ps, char *es, char **q, char **eq)
     }
     break;
   default:
+    // 其余字符
     ret = 'a';
     while(s < es && !strchr(whitespace, *s) && !strchr(symbols, *s))
       s++;
     break;
   }
+  
   if(eq)
     *eq = s;
 
   while(s < es && strchr(whitespace, *s))
     s++;
+
+  // 更新了ps, 之后能接着调用
   *ps = s;
   return ret;
 }
 
+/**
+ * 将s跳过空白字符
+ * 
+ * return: s跳过空白字符的首个字符在toks里
+*/
 int
 peek(char **ps, char *es, char *toks)
 {
+  // 为什么ps要传char**, char*不行么(ps: pointer of s)
+  // 因为peek是要修改s的
   char *s;
 
   s = *ps;
   while(s < es && strchr(whitespace, *s))
+    // 修改了s
     s++;
   *ps = s;
   return *s && strchr(toks, *s);
@@ -328,7 +380,7 @@ struct cmd *nulterminate(struct cmd*);
 struct cmd*
 parsecmd(char *s)
 {
-  char *es;
+  char *es;//指end
   struct cmd *cmd;
 
   es = s + strlen(s);
