@@ -21,6 +21,7 @@ void
 start()
 {
   // set M Previous Privilege mode to Supervisor, for mret.
+  // mstatus 寄存器: 机器状态
   unsigned long x = r_mstatus();
   x &= ~MSTATUS_MPP_MASK;
   x |= MSTATUS_MPP_S;
@@ -28,20 +29,26 @@ start()
 
   // set M Exception Program Counter to main, for mret.
   // requires gcc -mcmodel=medany
+  // mepc 寄存器: 产生异常时的pc(异常点)
+  // 设置成main => mret到main
   w_mepc((uint64)main);
 
   // disable paging for now.
+  // satp 寄存器: Supervisor Address Translation and Protection
+  // 地址翻译相关
   w_satp(0);
 
   // delegate all interrupts and exceptions to supervisor mode.
+  // 两个寄存器 medeleg/mideleg
   w_medeleg(0xffff);
   w_mideleg(0xffff);
+  // 启用中断---三个类型: 外部/时钟/软件
   w_sie(r_sie() | SIE_SEIE | SIE_STIE | SIE_SSIE);
 
   // configure Physical Memory Protection to give supervisor mode
   // access to all of physical memory.
-  w_pmpaddr0(0x3fffffffffffffull);
-  w_pmpcfg0(0xf);
+  w_pmpaddr0(0x3fffffffffffffull);// 范围
+  w_pmpcfg0(0xf);// 权限
 
   // ask for clock interrupts.
   timerinit();
@@ -51,6 +58,7 @@ start()
   w_tp(id);
 
   // switch to supervisor mode and jump to main().
+  // 根据mepc返回
   asm volatile("mret");
 }
 

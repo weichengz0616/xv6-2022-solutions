@@ -4,6 +4,8 @@ struct context {
   uint64 sp;
 
   // callee-saved
+  // 为什么只保存callee寄存器???
+  // 不确定在哪个指令switch啊
   uint64 s0;
   uint64 s1;
   uint64 s2;
@@ -22,6 +24,7 @@ struct context {
 struct cpu {
   struct proc *proc;          // The process running on this cpu, or null.
   struct context context;     // swtch() here to enter scheduler().
+  // push off是什么???
   int noff;                   // Depth of push_off() nesting.
   int intena;                 // Were interrupts enabled before push_off()?
 };
@@ -79,6 +82,7 @@ struct trapframe {
   /* 280 */ uint64 t6;
 };
 
+// unused/used 代表什么状态?
 enum procstate { UNUSED, USED, SLEEPING, RUNNABLE, RUNNING, ZOMBIE };
 
 // Per-process state
@@ -91,16 +95,19 @@ struct proc {
   int killed;                  // If non-zero, have been killed
   int xstate;                  // Exit status to be returned to parent's wait
   int pid;                     // Process ID
+  int trace_mask;              // 用于trace系统调用
 
   // wait_lock must be held when using this:
   struct proc *parent;         // Parent process
 
   // these are private to the process, so p->lock need not be held.
+  // 内核栈! 内核代码执行的地方, 处理中断等等
   uint64 kstack;               // Virtual address of kernel stack
   uint64 sz;                   // Size of process memory (bytes)
   pagetable_t pagetable;       // User page table
   struct trapframe *trapframe; // data page for trampoline.S
   struct context context;      // swtch() here to run process
+  // 打开文件不是inode => 三层抽象
   struct file *ofile[NOFILE];  // Open files
   struct inode *cwd;           // Current directory
   char name[16];               // Process name (debugging)

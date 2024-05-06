@@ -2,6 +2,7 @@
         # and causes each hart (i.e. CPU) to jump there.
         # kernel.ld causes the following code to
         # be placed at 0x80000000.
+        # hart: 硬件线程, 即core
 .section .text
 .global _entry
 _entry:
@@ -11,7 +12,7 @@ _entry:
         # sp = stack0 + (hartid * 4096)
         la sp, stack0
         li a0, 1024*4
-        csrr a1, mhartid
+        csrr a1, mhartid # 获取hart id
         addi a1, a1, 1
         mul a0, a0, a1
         add sp, sp, a0

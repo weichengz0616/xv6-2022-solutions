@@ -8,7 +8,7 @@
 start:
         la a0, init
         la a1, argv
-        li a7, SYS_exec
+        li a7, SYS_exec # 系统调用号, 调用exec
         ecall
 
 # for(;;) exit();
@@ -18,6 +18,7 @@ exit:
         jal exit
 
 # char init[] = "/init\0";
+# 字符串常量
 init:
   .string "/init\0"
 

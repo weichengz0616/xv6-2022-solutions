@@ -1,6 +1,9 @@
 struct stat;
 
 // system calls
+// 就像lib一样声明接口
+// 通过usys.pl生成汇编将user的 xxx 和kernel的 SYS_xxx 关联起来
+// 汇编就是eg. call fork => 到fork代码(usys.pl生成的)
 int fork(void);
 int exit(int) __attribute__((noreturn));
 int wait(int*);
@@ -22,6 +25,7 @@ int getpid(void);
 char* sbrk(int);
 int sleep(int);
 int uptime(void);
+int trace(int);
 
 // ulib.c
 int stat(const char*, struct stat*);

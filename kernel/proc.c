@@ -114,7 +114,7 @@ allocproc(void)
   for(p = proc; p < &proc[NPROC]; p++) {
     acquire(&p->lock);
     if(p->state == UNUSED) {
-      goto found;
+      goto found;//锁
     } else {
       release(&p->lock);
     }
@@ -123,12 +123,12 @@ allocproc(void)
 
 found:
   p->pid = allocpid();
-  p->state = USED;
+  p->state = USED;// used表示当前proc被占用
 
   // Allocate a trapframe page.
   if((p->trapframe = (struct trapframe *)kalloc()) == 0){
     freeproc(p);
-    release(&p->lock);
+    release(&p->lock);// 不成功分配释放锁
     return 0;
   }
 
@@ -218,6 +218,10 @@ proc_freepagetable(pagetable_t pagetable, uint64 sz)
 // a user program that calls exec("/init")
 // assembled from ../user/initcode.S
 // od -t xC ../user/initcode
+// 将这段汇编代码放入init proc的代码段
+// 当这个进程被调度的时候, 这段代码就会执行
+// 这段代码实质上是调用exec, 执行user/init的代码, 启动shell
+// exec会替换memory
 uchar initcode[] = {
   0x17, 0x05, 0x00, 0x00, 0x13, 0x05, 0x45, 0x02,
   0x97, 0x05, 0x00, 0x00, 0x93, 0x85, 0x35, 0x02,
@@ -287,6 +291,8 @@ fork(void)
   if((np = allocproc()) == 0){
     return -1;
   }
+
+  np->trace_mask = p->trace_mask;
 
   // Copy user memory from parent to child.
   if(uvmcopy(p->pagetable, np->pagetable, p->sz) < 0){
