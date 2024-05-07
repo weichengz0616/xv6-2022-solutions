@@ -89,6 +89,7 @@ uservec:
         sfence.vma zero, zero
 
         # install the kernel page table.
+        # !!!!!!!kernel不是进程!!!!!!!!
         csrw satp, t1
 
         # flush now-stale user entries from the TLB.

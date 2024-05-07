@@ -151,6 +151,8 @@ memcpy(void *dst, const void *src, uint n)
   return memmove(dst, src, n);
 }
 
+// getpid写成用户库, 不用陷入内核
+// 直接在自己的虚拟地址取到
 #ifdef LAB_PGTBL
 int
 ugetpid(void)

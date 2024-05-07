@@ -11,6 +11,10 @@
 
 void freerange(void *pa_start, void *pa_end);
 
+
+// 运行时的物理内存分配只使用了 kernel end ---- PHYSTOP 部分
+// 并不是全部RAM
+// 内核栈, 页表, pipe buffer, 用户进程的地址空间 都在这个范围!!!!!!!!
 extern char end[]; // first address after kernel.
                    // defined by kernel.ld.
 
@@ -18,6 +22,7 @@ struct run {
   struct run *next;
 };
 
+// 锁 + 链表
 struct {
   struct spinlock lock;
   struct run *freelist;
@@ -27,6 +32,8 @@ void
 kinit()
 {
   initlock(&kmem.lock, "kmem");
+
+  // 初始化freelist
   freerange(end, (void*)PHYSTOP);
 }
 
@@ -52,11 +59,17 @@ kfree(void *pa)
     panic("kfree");
 
   // Fill with junk to catch dangling refs.
+  // 妙啊, 强行修改释放页内的值
+  // 这样的话, 会让悬挂指针更早出现问题 => 更容易debug和发现悬挂问题
   memset(pa, 1, PGSIZE);
 
+  // 妙啊
+  // 把pa强转为 run*
+  // 这相当于将链表的各个元素存在自己的空闲page里的
   r = (struct run*)pa;
 
   acquire(&kmem.lock);
+  // 头插法
   r->next = kmem.freelist;
   kmem.freelist = r;
   release(&kmem.lock);
@@ -78,5 +91,8 @@ kalloc(void)
 
   if(r)
     memset((char*)r, 5, PGSIZE); // fill with junk
+
+  // 若没有空闲物理页了, 返回空
+  // 这里是可以考虑扩展的 => 将物理页换到磁盘
   return (void*)r;
 }

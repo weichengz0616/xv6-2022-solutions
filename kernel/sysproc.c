@@ -75,6 +75,35 @@ int
 sys_pgaccess(void)
 {
   // lab pgtbl: your code here.
+  uint64 base;
+  int len;
+  uint64 mask;
+  int res = 0;
+
+  argaddr(0, &base);
+  argint(1, &len);
+  argaddr(2, &mask);
+
+  base = PGROUNDDOWN(base);
+  struct proc* p = myproc();
+
+  for(int i = 0; i < len;++i)
+  {
+    //printf("i: %d\n", i);
+    uint64 va = base + i * PGSIZE;
+
+    pte_t* pte =  walk(p->pagetable, va, 0);
+    if(pte && (*pte & PTE_A))
+    {
+      printf("iiiii: %d\n", i);
+      *pte = *pte & (~(PTE_A)); // clear PTE_A
+      res |= (1 << i);
+    }
+  }
+
+  // 将res写回mask
+  copyout(p->pagetable, mask, (char*)&res, sizeof(res));
+
   return 0;
 }
 #endif
