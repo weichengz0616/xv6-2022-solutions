@@ -410,6 +410,8 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
     pa0 = walkaddr(pagetable, va0);
     if(pa0 == 0)
       return -1;
+    
+    // 可能超出这个页
     n = PGSIZE - (srcva - va0);
     if(n > max)
       n = max;

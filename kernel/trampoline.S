@@ -6,6 +6,10 @@
         # at the same virtual address (TRAMPOLINE)
         # in user and kernel space so that it continues
         # to work when it switches page tables.
+        # 精髓啊, trampoline在进程地址空间和在内核空间的虚拟地址是一样的
+        # 因此页表切换后, 依然可以继续执行
+
+
         # kernel.ld causes this code to start at 
         # a page boundary.
         #
@@ -26,8 +30,15 @@ uservec:
         # user page table.
         #
 
+        # 这段代码目的:
+        # 1.保存现场(寄存器)
+        # 2.切换页表为内核页表
+        # 3.跳转到usertrap代码处 => 真正处理来自用户空间的trap的代码
+        # 这段代码的地址还是用户空间的地址
+
         # save user a0 in sscratch so
         # a0 can be used to get at TRAPFRAME.
+        # sscratch就是个临时寄存器
         csrw sscratch, a0
 
         # each process has a separate p->trapframe memory area,
@@ -36,6 +47,7 @@ uservec:
         li a0, TRAPFRAME
         
         # save the user registers in TRAPFRAME
+        # 注意a0是用户空间的虚拟地址, 此时页表还是用户的页表
         sd ra, 40(a0)
         sd sp, 48(a0)
         sd gp, 56(a0)
@@ -72,9 +84,11 @@ uservec:
         sd t0, 112(a0)
 
         # initialize kernel stack pointer, from p->trapframe->kernel_sp
+        # 内核栈
         ld sp, 8(a0)
 
         # make tp hold the current hartid, from p->trapframe->kernel_hartid
+        # 意义是什么????????
         ld tp, 32(a0)
 
         # load the address of usertrap(), from p->trapframe->kernel_trap
@@ -86,9 +100,11 @@ uservec:
 
         # wait for any previous memory operations to complete, so that
         # they use the user page table.
+        # 为什么刷新TLB两次?????????切换页表后再刷新不行吗????????
         sfence.vma zero, zero
 
         # install the kernel page table.
+        # 切换页表
         csrw satp, t1
 
         # flush now-stale user entries from the TLB.

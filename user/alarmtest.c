@@ -25,6 +25,7 @@ main(int argc, char *argv[])
 {
   test0();
   test1();
+  printf("\ntest1 over\n");
   test2();
   test3();
   exit(0);
