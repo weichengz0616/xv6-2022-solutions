@@ -308,27 +308,47 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
   pte_t *pte;
   uint64 pa, i;
   uint flags;
-  char *mem;
+  //char *mem;
 
+  // 从0开始依次复制, 到sz, 这得益于xv6地址空间是从0开始且连续的
+  // 顶部的trapframe和trampoline不在此列, 这俩的页表项在初始化table就写好
+  // 代码中的 uvm 即用户虚拟内存, 只是指从 0 到 heap顶
   for(i = 0; i < sz; i += PGSIZE){
     if((pte = walk(old, i, 0)) == 0)
       panic("uvmcopy: pte should exist");
     if((*pte & PTE_V) == 0)
       panic("uvmcopy: page not present");
+
+    if(*pte & PTE_W)
+    {
+      // 对于原先就可以写的页, 设置COW, 并清空W
+      *pte = (*pte) & ~(PTE_W); // clear PTE_W
+      *pte = (*pte) | PTE_COW;
+    }
+    else
+    {
+      // COW标记位的精髓在此
+      // 原先不可写的页不设置COW
+      // 这样也就不会再分配!!!!
+    }
     pa = PTE2PA(*pte);
     flags = PTE_FLAGS(*pte);
-    if((mem = kalloc()) == 0)
-      goto err;
-    memmove(mem, (char*)pa, PGSIZE);
-    if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){
-      kfree(mem);
+    // 增加引用计数
+    rc_plus1((void*)pa);
+
+    // if((mem = kalloc()) == 0)
+    //   goto err;
+    // memmove(mem, (char*)pa, PGSIZE);
+  
+    if(mappages(new, i, PGSIZE, pa, flags) != 0){
+      //kfree(mem);
       goto err;
     }
   }
   return 0;
 
  err:
-  uvmunmap(new, 0, i / PGSIZE, 1);
+  uvmunmap(new, 0, i / PGSIZE, 0);
   return -1;
 }
 
@@ -345,19 +365,84 @@ uvmclear(pagetable_t pagetable, uint64 va)
   *pte &= ~PTE_U;
 }
 
+
+// -1 错误; 0 不是cow; >0 是cow
+// 这里的错误代表着用户进程的va越界或者权限错误, 应该直接kill
+int check_cow(pagetable_t pagetable,uint64 va)
+{
+  // 这里内核要做好检查
+  // 对于地址越界或者权限问题应该直接kill
+  // 出发点在于, 这里新添加了一种异常处理, 需要正确检查是否是期望的异常, 即COW
+  // 否则, 应用可能利用不完整的异常处理破坏权限. => 见usertests
+  if(va >= MAXVA)
+    return -1;
+  pte_t* pte = walk(pagetable,va,0);
+
+  if(pte == 0 || ((*pte) & PTE_V) == 0 || ((*pte) & PTE_U) == 0)
+    return -1;
+  
+  return ((*pte) & PTE_COW);//不为1, 什么鬼bug...
+}
+
+int handle_cow(pagetable_t pagetable,pte_t* pte)
+{
+  // 分配新页
+  char* newpage = kalloc();
+  if(newpage == 0)
+  {
+    return -1;
+  }
+  else
+  {
+    // 复制页
+    uint64 pa = PTE2PA(*pte);
+    uint flags = PTE_FLAGS(*pte);
+    memmove(newpage, (char*)pa, PGSIZE);
+
+    // 释放旧页
+    kfree((void*)pa);
+
+    // 修改PTE
+    *pte = PA2PTE(newpage) | flags | PTE_W;
+    *pte = (*pte) & ~(PTE_COW);
+  }
+
+  return 0;
+}
+
 // Copy from kernel to user.
 // Copy len bytes from src to virtual address dstva in a given page table.
 // Return 0 on success, -1 on error.
+// 此处是内核直接修改用户内存
+// 因此遇到COW页是不会page fault的
+// 单独处理
 int
 copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
 {
-  uint64 n, va0, pa0;
+  uint64 n, va0, pa0 = 0;
 
   while(len > 0){
     va0 = PGROUNDDOWN(dstva);
-    pa0 = walkaddr(pagetable, va0);
-    if(pa0 == 0)
+
+    // COW
+    int cow = check_cow(pagetable, va0);
+    if(cow > 0)
+    {
+      if(handle_cow(pagetable, walk(pagetable, va0, 0)) < 0)
+      {
+        return -1;
+      }
+    }
+    else if(cow == 0)
+    {
+    }
+    else
+    {
       return -1;
+    }
+
+    pa0 = walkaddr(pagetable,va0);// 这个不能删啊啊
+    //printf("%p\n", pa0);
     n = PGSIZE - (dstva - va0);
     if(n > len)
       n = len;

@@ -65,7 +65,36 @@ usertrap(void)
     intr_on();
 
     syscall();
-  } else if((which_dev = devintr()) != 0){
+   } 
+  else if(r_scause() == 15) {
+    // 由于多次fork的存在, 可能会有多个虚拟页COW映射至同一物理页
+    // 当最后一个COW虚拟页被重新分配后, 那一个物理页将"悬挂"
+    // 因此, 必须给每个物理页加上 reference count, 当计数为0时, 物理页自动释放
+    // 实现在kalloc.c中
+
+
+    // scause == 15 => 读错误导致的page fault
+    // 拿到导致页故障的虚拟地址
+    uint64 va = r_stval();
+
+    // COW
+    int cow = check_cow(p->pagetable, va);
+    if(cow > 0)
+    {
+      //printf("h\n");
+      if(handle_cow(p->pagetable, walk(p->pagetable, va, 0)) < 0)
+      {
+        //printf("hh\n");
+        setkilled(p);
+      }
+    }
+    else
+    {
+      setkilled(p);
+    }
+
+  } 
+  else if((which_dev = devintr()) != 0){
     // ok
   } else {
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
