@@ -4,6 +4,17 @@
 # 
 # Save current registers in old. Load from new.	
 
+# 为什么只保存callee-saved???
+# 调用swtch的函数自己会保存caller-saved到栈上, swtch还会返回
+# swtch本质上就是修改了一堆寄存器, 尤其注意ra, sp
+# ra: 由call指令修改, ret指令根据ra跳转. => swtch修改了ra, 因此ret指令不会返回到调用swtch的函数里
+# sp: 栈也被改变了
+
+
+# 它和trapframe区别是什么???
+# 区别就是uservec是直接被cpu设置的, 返回指令是sret, trapframe需要保存全部寄存器
+# swtch是被函数调用(call指令)的, 返回指令是ret, 还会返回原来的栈上, 因此context只保存callee寄存器
+# (所谓caller, callee只是个约定, 保存和恢复操作实际上是遵循这个约定的编译器生成的代码)
 
 .globl swtch
 swtch:

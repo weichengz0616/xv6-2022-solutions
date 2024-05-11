@@ -90,6 +90,8 @@ pipewrite(struct pipe *pi, uint64 addr, int n)
       sleep(&pi->nwrite, &pi->lock);
     } else {
       char ch;
+      // 一个一个字符地从用户空间copy到pipe data
+      // 为啥要一个一个的??
       if(copyin(pr->pagetable, &ch, addr + i, 1) == -1)
         break;
       pi->data[pi->nwrite++ % PIPESIZE] = ch;
@@ -115,6 +117,8 @@ piperead(struct pipe *pi, uint64 addr, int n)
       release(&pi->lock);
       return -1;
     }
+
+    // 一点没读到
     sleep(&pi->nread, &pi->lock); //DOC: piperead-sleep
   }
   for(i = 0; i < n; i++){  //DOC: piperead-copy
@@ -126,5 +130,7 @@ piperead(struct pipe *pi, uint64 addr, int n)
   }
   wakeup(&pi->nwrite);  //DOC: piperead-wakeup
   release(&pi->lock);
+
+  // i是实际读到的字节数, 可能没读满
   return i;
 }

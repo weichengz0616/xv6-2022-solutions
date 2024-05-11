@@ -29,6 +29,8 @@ acquire(struct spinlock *lk)
   //   a5 = 1
   //   s1 = &lk->locked
   //   amoswap.w.aq a5, a5, (s1)
+  // 若locked=1, 将1赋值给locked, 并返回locked原先的值, 即1, 继续循环
+  // 若locked=0, 将1赋值给locked, 并返回locked原先的值, 即0, 退出循环, 拿到了锁
   while(__sync_lock_test_and_set(&lk->locked, 1) != 0)
     ;
 
@@ -36,6 +38,7 @@ acquire(struct spinlock *lk)
   // past this point, to ensure that the critical section's memory
   // references happen strictly after the lock is acquired.
   // On RISC-V, this emits a fence instruction.
+  // 啥玩意儿?????
   __sync_synchronize();
 
   // Record info about lock acquisition for holding() and debugging.

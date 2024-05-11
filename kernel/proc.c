@@ -61,6 +61,7 @@ procinit(void)
 // Must be called with interrupts disabled,
 // to prevent race with process being moved
 // to a different CPU.
+// xv6保证在内核中, tp存的是hartid
 int
 cpuid()
 {
@@ -82,6 +83,8 @@ mycpu(void)
 struct proc*
 myproc(void)
 {
+  // 调用mycpu之前必须关掉中断
+  // 因为调用mycpu的过程中, 如果发生中断, 导致该进程被换到另一个cpu上, 则id错误
   push_off();
   struct cpu *c = mycpu();
   struct proc *p = c->proc;
@@ -143,6 +146,8 @@ found:
   // Set up new context to start executing at forkret,
   // which returns to user space.
   memset(&p->context, 0, sizeof(p->context));
+  // 进程的kernel stack的ra, sp在此初始化
+  // 第一次调度该进程将从这里进入
   p->context.ra = (uint64)forkret;
   p->context.sp = p->kstack + PGSIZE;
 
@@ -365,6 +370,8 @@ exit(int status)
   end_op();
   p->cwd = 0;
 
+  // 先拿wait lock 再拿p lock
+  // wait函数中也是这个顺序 => 拿锁顺序一致防止死锁
   acquire(&wait_lock);
 
   // Give any children to init.
@@ -373,11 +380,13 @@ exit(int status)
   // Parent might be sleeping in wait().
   wakeup(p->parent);
   
+  // 调用sched必须拿锁
   acquire(&p->lock);
 
   p->xstate = status;
   p->state = ZOMBIE;
 
+  // wakeup后放锁
   release(&wait_lock);
 
   // Jump into the scheduler, never to return.
@@ -394,8 +403,11 @@ wait(uint64 addr)
   int havekids, pid;
   struct proc *p = myproc();
 
+
+  // sleep/wakeup 的condition lock
   acquire(&wait_lock);
 
+  // sleep的循环检查条件
   for(;;){
     // Scan through table looking for exited children.
     havekids = 0;
@@ -417,6 +429,8 @@ wait(uint64 addr)
           freeproc(pp);
           release(&pp->lock);
           release(&wait_lock);
+
+          // 只会wait到一个child
           return pid;
         }
         release(&pp->lock);
@@ -460,6 +474,9 @@ scheduler(void)
         // before jumping back to us.
         p->state = RUNNING;
         c->proc = p;
+
+        // 从这里上下文切换, 之后swtch也回到这里
+        // c的context被如何初始化的??? => 看下main.c
         swtch(&c->context, &p->context);
 
         // Process is done running for now.
@@ -494,7 +511,7 @@ sched(void)
     panic("sched interruptible");
 
   intena = mycpu()->intena;
-  swtch(&p->context, &mycpu()->context);
+  swtch(&p->context, &mycpu()->context);// p的context切换到当前cpu的context
   mycpu()->intena = intena;
 }
 
@@ -511,6 +528,7 @@ yield(void)
 
 // A fork child's very first scheduling by scheduler()
 // will swtch to forkret.
+// 该进程创建后第一次被调度是到这里
 void
 forkret(void)
 {
@@ -527,11 +545,13 @@ forkret(void)
     fsinit(ROOTDEV);
   }
 
+  // 然后返回用户态, 注意设计的统一性
   usertrapret();
 }
 
 // Atomically release lock and sleep on chan.
 // Reacquires lock when awakened.
+// 进入sleep之前必须拿锁, 否则可能出现先wakeup再真正sleep的情况
 void
 sleep(void *chan, struct spinlock *lk)
 {
@@ -545,19 +565,28 @@ sleep(void *chan, struct spinlock *lk)
   // so it's okay to release lk.
 
   acquire(&p->lock);  //DOC: sleeplock1
+  // 拿了p->lock就可以释放lk了
+  // 因为另一个调用wakeup必须先拿到p->lock才能真正唤醒
   release(lk);
 
   // Go to sleep.
+  // 此处真正sleep
   p->chan = chan;
   p->state = SLEEPING;
 
   sched();
 
+  // 再次被调度后, 就会回到这里
   // Tidy up.
   p->chan = 0;
 
   // Reacquire original lock.
   release(&p->lock);
+
+  // 继续拿锁!!!!
+  // 因为可能有多个sleep的进程被唤醒, 只有一个进程真正拿到所需数据, 其他进程的唤醒是spurious的
+  // 因此sleep必须在循环里调用!!!!!因为唤醒了依然可能条件不满足
+  // 参见xv6-book中78页对于信号量PV的实现
   acquire(lk);
 }
 
