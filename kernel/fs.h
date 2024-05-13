@@ -24,15 +24,21 @@ struct superblock {
 
 #define FSMAGIC 0x10203040
 
-#define NDIRECT 12
-#define NINDIRECT (BSIZE / sizeof(uint))
+#define NDIRECT 12 // => 一个inode有12个直接块
+#define NINDIRECT (BSIZE / sizeof(uint)) // => 1个间接块, 这个块里存了块地址
 #define MAXFILE (NDIRECT + NINDIRECT)
 
 // On-disk inode structure
+// disk上的数据结构, 内存保存的inode信息更多
 struct dinode {
-  short type;           // File type
+  // file/directory/special file(eg. device) type=0表示未使用
+  short type;           // File type 
+
+  // 设备号到底是什么????????
   short major;          // Major device number (T_DEVICE only)
   short minor;          // Minor device number (T_DEVICE only)
+
+  // 多少目录的entry引用该inode, 等于0时表示释放该inode和data
   short nlink;          // Number of links to inode in file system
   uint size;            // Size of file (bytes)
   uint addrs[NDIRECT+1];   // Data block addresses
@@ -48,11 +54,15 @@ struct dinode {
 #define BPB           (BSIZE*8)
 
 // Block of free map containing bit for block b
+// b这个块所在的bitmap块号
 #define BBLOCK(b, sb) ((b)/BPB + sb.bmapstart)
 
 // Directory is a file containing a sequence of dirent structures.
 #define DIRSIZ 14
 
+// directory entry
+// inum=0表示entry为空 => ialloc中inum确实从1开始分配
+// 名字最多14个字符, 不支持长名字 => linux如何支持长名文件???????
 struct dirent {
   ushort inum;
   char name[DIRSIZ];

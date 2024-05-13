@@ -32,18 +32,22 @@
 
 // Contents of the header block, used for both the on-disk header block
 // and to keep track in memory of logged block# before commit.
+// 表示一个完整的事务???
+// 当一个事务提交之后才写header, 此时 n!=0
+// copy之后, n=0
+// 因此commit之前crash, n=0; commit之后crash, n!=0
 struct logheader {
-  int n;
-  int block[LOGSIZE];
+  int n;// n个log block被用了的
+  int block[LOGSIZE];// log块<->data block???
 };
 
 struct log {
   struct spinlock lock;
-  int start;
-  int size;
-  int outstanding; // how many FS sys calls are executing.
+  int start; // 第一个log block
+  int size; // log block数量????
+  int outstanding; // how many FS sys calls are executing.这么多未完成的系统调用占据着log
   int committing;  // in commit(), please wait.
-  int dev;
+  int dev; // log是对应了一个dev的????
   struct logheader lh;
 };
 struct log log;
@@ -51,6 +55,7 @@ struct log log;
 static void recover_from_log(void);
 static void commit();
 
+// 是一个dev上跑一个文件系统????
 void
 initlog(int dev, struct superblock *sb)
 {
@@ -73,6 +78,9 @@ install_trans(int recovering)
   for (tail = 0; tail < log.lh.n; tail++) {
     struct buf *lbuf = bread(log.dev, log.start+tail+1); // read log block
     struct buf *dbuf = bread(log.dev, log.lh.block[tail]); // read dst
+
+    // 都放进了cache, 先在内存中copy, 最后调用bwrite
+    // 此时崩溃了呢??????即只有部分块写进了disk
     memmove(dbuf->data, lbuf->data, BSIZE);  // copy block to dst
     bwrite(dbuf);  // write dst to disk
     if(recovering == 0)
@@ -83,6 +91,7 @@ install_trans(int recovering)
 }
 
 // Read the log header from disk into the in-memory log header
+// header是放在disk上的???
 static void
 read_head(void)
 {
@@ -99,6 +108,9 @@ read_head(void)
 // Write in-memory log header to disk.
 // This is the true point at which the
 // current transaction commits.
+// 先把写到cache里, 再使用bwrite
+// write_head之前, 已经写完了log block, 因此此时就是commit完成之时
+// 问题是 bwrite(buf) 处崩溃了怎么办????? 即只有一部分log block被放到位置上
 static void
 write_head(void)
 {
@@ -127,11 +139,17 @@ void
 begin_op(void)
 {
   acquire(&log.lock);
+
+  // sleep的循环
   while(1){
     if(log.committing){
       sleep(&log, &log.lock);
     } else if(log.lh.n + (log.outstanding+1)*MAXOPBLOCKS > LOGSIZE){
+      // 这个条件是什么意思????大概知道是为了让所有系统调用占用的log block的和小于提供的log block
+      // log.size有什么用, 这个条件用的是LOGSIZE, 哪个是总的log block数量???
+      // 注意log.lh.n到底是什么?????为什么还要用outstanding来估计???????
       // this op might exhaust log space; wait for commit.
+      // 这里假设一个系统调用占据MAXOPBLOCKS个块
       sleep(&log, &log.lock);
     } else {
       log.outstanding += 1;
@@ -181,10 +199,14 @@ write_log(void)
   int tail;
 
   for (tail = 0; tail < log.lh.n; tail++) {
+    // start+1 开始, start处是header块
+    // log block也在buffer cache里
     struct buf *to = bread(log.dev, log.start+tail+1); // log block
     struct buf *from = bread(log.dev, log.lh.block[tail]); // cache block
+
+    // 内存层面的move
     memmove(to->data, from->data, BSIZE);
-    bwrite(to);  // write the log
+    bwrite(to);  // write the log => 写到log block里, 还没到真正的位置
     brelse(from);
     brelse(to);
   }
@@ -222,11 +244,15 @@ log_write(struct buf *b)
   if (log.outstanding < 1)
     panic("log_write outside of trans");
 
+  // 这里是给 b 在log.lh找个插槽
+  // 循环的目的是, log.lh中可能本来就已经存在这个 b 了, 就不用找新的 => absorption
   for (i = 0; i < log.lh.n; i++) {
     if (log.lh.block[i] == b->blockno)   // log absorption
       break;
   }
   log.lh.block[i] = b->blockno;
+
+  // 这说明本来不存在b, 新插一个
   if (i == log.lh.n) {  // Add new block to log?
     bpin(b);
     log.lh.n++;

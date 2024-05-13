@@ -14,6 +14,8 @@
 #include "proc.h"
 
 struct devsw devsw[NDEV];
+
+// 整个系统打开的全部file
 struct {
   struct spinlock lock;
   struct file file[NFILE];
@@ -33,7 +35,7 @@ filealloc(void)
 
   acquire(&ftable.lock);
   for(f = ftable.file; f < ftable.file + NFILE; f++){
-    if(f->ref == 0){
+    if(f->ref == 0){// 空槽
       f->ref = 1;
       release(&ftable.lock);
       return f;
@@ -68,6 +70,9 @@ fileclose(struct file *f)
     release(&ftable.lock);
     return;
   }
+
+  // 减后=0, 直接释放
+  // 细节啊 先把ftable锁放了, 再单独处理其他资源, 因为ref=0, 这个空槽已经可以再分配了
   ff = *f;
   f->ref = 0;
   f->type = FD_NONE;
@@ -103,6 +108,8 @@ filestat(struct file *f, uint64 addr)
 
 // Read from file f.
 // addr is a user virtual address.
+// 读文件到用户空间
+// 根据类型调用对应api
 int
 fileread(struct file *f, uint64 addr, int n)
 {

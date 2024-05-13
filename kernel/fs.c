@@ -70,9 +70,13 @@ balloc(uint dev)
 
   bp = 0;
   for(b = 0; b < sb.size; b += BPB){
+    // 两层循环很细节啊, 一个bitmap块只拿一次
+    // bi: 在bitmap里的index
     bp = bread(dev, BBLOCK(b, sb));
     for(bi = 0; bi < BPB && b + bi < sb.size; bi++){
       m = 1 << (bi % 8);
+
+      // 找到空块, 分配
       if((bp->data[bi/8] & m) == 0){  // Is block free?
         bp->data[bi/8] |= m;  // Mark block in use.
         log_write(bp);
@@ -202,6 +206,8 @@ ialloc(uint dev, short type)
   struct buf *bp;
   struct dinode *dip;
 
+  // 细节从inum=1开始
+  // dirent的inum=0表示条目为空
   for(inum = 1; inum < sb.ninodes; inum++){
     bp = bread(dev, IBLOCK(inum, sb));
     dip = (struct dinode*)bp->data + inum%IPB;
@@ -243,6 +249,8 @@ iupdate(struct inode *ip)
 // Find the inode with number inum on device dev
 // and return the in-memory copy. Does not lock
 // the inode and does not read it from disk.
+// 只是在itable中分配了位置, 还没有从磁盘中读入inode
+// iget和ilock分开实现考虑很细啊, 防止死锁, 见book-92页
 static struct inode*
 iget(uint dev, uint inum)
 {
@@ -289,6 +297,9 @@ idup(struct inode *ip)
 
 // Lock the given inode.
 // Reads the inode from disk if necessary.
+// iget拿到的itable空槽是无效的, 且无锁
+// 此处ilock才拿锁且读disk填充inode
+// 返回时也拿了锁, valid为0就读, 否则就只是上个锁
 void
 ilock(struct inode *ip)
 {
@@ -336,6 +347,7 @@ iunlock(struct inode *ip)
 void
 iput(struct inode *ip)
 {
+  // 这里修改ref拿的是itable的锁, 更粗粒度的锁??
   acquire(&itable.lock);
 
   if(ip->ref == 1 && ip->valid && ip->nlink == 0){
@@ -379,6 +391,8 @@ iunlockput(struct inode *ip)
 // Return the disk block address of the nth block in inode ip.
 // If there is no such block, bmap allocates one.
 // returns 0 if out of disk space.
+// 返回inode中第bn个块的块号, 若没有, 负责分配
+// bn相当于逻辑块号, 从0开始
 static uint
 bmap(struct inode *ip, uint bn)
 {
@@ -416,6 +430,49 @@ bmap(struct inode *ip, uint bn)
     brelse(bp);
     return addr;
   }
+  // bn -= NINDIRECT;
+
+  // if(bn < NINDIRECT * NINDIRECT)
+  // {
+  //   // 双层间接块
+  //   uint indirect = bn / NINDIRECT;
+  //   uint offset = bn % NINDIRECT;
+
+  //   // 若双层间接未分配, 此处分配
+  //   if((addr = ip->addrs[NDIRECT + 1]) == 0){
+  //     addr = balloc(ip->dev);
+  //     if(addr == 0)
+  //       return 0;
+  //     ip->addrs[NDIRECT + 1] = addr;
+  //   }
+  //   bp = bread(ip->dev, addr);
+  //   a = (uint*)bp->data;
+
+    
+  //   if((addr = a[indirect]) == 0){
+  //     addr = balloc(ip->dev);
+  //     if(addr == 0)
+  //       return 0;
+  //     a[indirect] = addr;
+  //   }
+  //   brelse(bp);
+
+  //   bp = bread(ip->dev, addr);
+  //   a = (uint*)bp->data;
+
+
+  //   if((addr = a[offset]) == 0){
+  //     addr = balloc(ip->dev);
+  //     if(addr){
+  //       a[offset] = addr;
+  //       log_write(bp);
+  //     }
+  //   }
+  //   brelse(bp);
+
+
+  //   return addr;
+  // }
 
   panic("bmap: out of range");
 }
@@ -448,6 +505,32 @@ itrunc(struct inode *ip)
     ip->addrs[NDIRECT] = 0;
   }
 
+  // if(ip->addrs[NDIRECT + 1])
+  // {
+  //   bp = bread(ip->dev, ip->addrs[NDIRECT]);
+  //   a = (uint*)bp->data;
+  //   for(j = 0; j < NINDIRECT; j++)
+  //   {
+  //     if(a[j])
+  //     {
+  //       struct buf *dbp = bread(ip->dev, a[j]);
+  //       uint *da = (uint*)dbp->data;
+
+  //       for(int k = 0; k < NINDIRECT; k++)
+  //       {
+  //         if(da[k])
+  //           bfree(ip->dev, da[k]);
+  //       }
+  //       brelse(dbp);
+  //       bfree(ip->dev, a[j]);
+  //       a[j] = 0;
+  //     }
+  //   }
+  //   brelse(bp);
+  //   bfree(ip->dev, ip->addrs[NDIRECT + 1]);
+  //   ip->addrs[NDIRECT + 1] = 0;
+  // }
+
   ip->size = 0;
   iupdate(ip);
 }
@@ -468,6 +551,9 @@ stati(struct inode *ip, struct stat *st)
 // Caller must hold ip->lock.
 // If user_dst==1, then dst is a user virtual address;
 // otherwise, dst is a kernel address.
+// 从文件ip的off开始读n字节到dst
+// user_dst决定是读到用户空间还是内核空间
+// 代码风格值得学习
 int
 readi(struct inode *ip, int user_dst, uint64 dst, uint off, uint n)
 {
@@ -484,6 +570,8 @@ readi(struct inode *ip, int user_dst, uint64 dst, uint off, uint n)
     if(addr == 0)
       break;
     bp = bread(ip->dev, addr);
+
+    // m-tot => 还有多少字节要读; BSIZE - off%BSIZE => 当前块还有多少字节
     m = min(n - tot, BSIZE - off%BSIZE);
     if(either_copyout(user_dst, dst, bp->data + (off % BSIZE), m) == -1) {
       brelse(bp);
@@ -514,6 +602,7 @@ writei(struct inode *ip, int user_src, uint64 src, uint off, uint n)
     return -1;
 
   for(tot=0; tot<n; tot+=m, off+=m, src+=m){
+    // 写操作可能超出当前文件已经分配到的block数量, 这里bmap会自动分配
     uint addr = bmap(ip, off/BSIZE);
     if(addr == 0)
       break;
@@ -527,6 +616,7 @@ writei(struct inode *ip, int user_src, uint64 src, uint off, uint n)
     brelse(bp);
   }
 
+  // 更新size
   if(off > ip->size)
     ip->size = off;
 
@@ -548,6 +638,7 @@ namecmp(const char *s, const char *t)
 
 // Look for a directory entry in a directory.
 // If found, set *poff to byte offset of entry.
+// 在dp中找到name的entry, 返回ip, 将dp文件内偏移量off写到poff
 struct inode*
 dirlookup(struct inode *dp, char *name, uint *poff)
 {
@@ -557,6 +648,7 @@ dirlookup(struct inode *dp, char *name, uint *poff)
   if(dp->type != T_DIR)
     panic("dirlookup not DIR");
 
+  // 
   for(off = 0; off < dp->size; off += sizeof(de)){
     if(readi(dp, 0, (uint64)&de, off, sizeof(de)) != sizeof(de))
       panic("dirlookup read");
@@ -567,6 +659,9 @@ dirlookup(struct inode *dp, char *name, uint *poff)
       if(poff)
         *poff = off;
       inum = de.inum;
+
+      // iget是不拿锁的
+      // 考虑查找 ".", 即查找自己, 如果iget拿锁, 会导致死锁
       return iget(dp->dev, inum);
     }
   }
@@ -576,6 +671,7 @@ dirlookup(struct inode *dp, char *name, uint *poff)
 
 // Write a new directory entry (name, inum) into the directory dp.
 // Returns 0 on success, -1 on failure (e.g. out of disk blocks).
+// 在dp中新加入条目
 int
 dirlink(struct inode *dp, char *name, uint inum)
 {
@@ -599,6 +695,10 @@ dirlink(struct inode *dp, char *name, uint inum)
 
   strncpy(de.name, name, DIRSIZ);
   de.inum = inum;
+
+  // 注意这个off很细节啊
+  // 上面假如没查到空位, off就等于dp->size, 这会导致writei修改size
+  // 这也可以看到另一个问题: 目录文件可能里面没存东西, 但size很大(之前分配了又删了)
   if(writei(dp, 0, (uint64)&de, off, sizeof(de)) != sizeof(de))
     return -1;
 
@@ -657,18 +757,25 @@ namex(char *path, int nameiparent, char *name)
     ip = iget(ROOTDEV, ROOTINO);
   else
     ip = idup(myproc()->cwd);
-
+  
+  // name中存有当前element
   while((path = skipelem(path, name)) != 0){
     ilock(ip);
     if(ip->type != T_DIR){
       iunlockput(ip);
       return 0;
     }
+
+    // *path="\0" 表示这已经是最后一个element
+    // 直接返回ip
     if(nameiparent && *path == '\0'){
       // Stop one level early.
       iunlock(ip);
       return ip;
     }
+
+    // 在ip中查找element
+    // 更新ip
     if((next = dirlookup(ip, name, 0)) == 0){
       iunlockput(ip);
       return 0;
@@ -676,6 +783,8 @@ namex(char *path, int nameiparent, char *name)
     iunlockput(ip);
     ip = next;
   }
+
+
   if(nameiparent){
     iput(ip);
     return 0;
@@ -683,6 +792,7 @@ namex(char *path, int nameiparent, char *name)
   return ip;
 }
 
+// 返回路径最后一个元素的inode
 struct inode*
 namei(char *path)
 {
@@ -690,6 +800,7 @@ namei(char *path)
   return namex(path, 0, name);
 }
 
+// 返回路径最后一个元素的前一个的inode, 并将最后一个元素写入name
 struct inode*
 nameiparent(char *path, char *name)
 {
