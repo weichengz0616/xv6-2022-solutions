@@ -120,6 +120,10 @@ sys_fstat(void)
 }
 
 // Create the path new as a link to the same inode as old.
+// 硬连接
+// new这个pathname 是引用的 old这个文件
+// 必须同设备, 原因在于每个设备都有自己的inode号
+// 本质上是为一个存在的inode(真正对应一个disk上的文件)创建一个新的pathname
 uint64
 sys_link(void)
 {
@@ -135,6 +139,7 @@ sys_link(void)
     return -1;
   }
 
+  // old不能是目录
   ilock(ip);
   if(ip->type == T_DIR){
     iunlockput(ip);
@@ -149,6 +154,7 @@ sys_link(void)
   if((dp = nameiparent(new, name)) == 0)
     goto bad;
   ilock(dp);
+  // 给dp插入新entry, name是输入的, inum是old的inum
   if(dp->dev != ip->dev || dirlink(dp, name, ip->inum) < 0){
     iunlockput(dp);
     goto bad;
@@ -242,6 +248,10 @@ bad:
   return -1;
 }
 
+
+// 这和link不同, 这是在path处创建一个新的inode
+// 用于open的O_CREATE, mkdir, mkddev
+// 返回创建好的inode pointer
 static struct inode*
 create(char *path, short type, short major, short minor)
 {
@@ -253,6 +263,7 @@ create(char *path, short type, short major, short minor)
 
   ilock(dp);
 
+  // 检查该路径下name是不是已经存在
   if((ip = dirlookup(dp, name, 0)) != 0){
     iunlockput(dp);
     ilock(ip);
@@ -273,15 +284,17 @@ create(char *path, short type, short major, short minor)
   ip->nlink = 1;
   iupdate(ip);
 
+  // 目录文件初始化
   if(type == T_DIR){  // Create . and .. entries.
     // No ip->nlink++ for ".": avoid cyclic ref count.
     if(dirlink(ip, ".", ip->inum) < 0 || dirlink(ip, "..", dp->inum) < 0)
       goto fail;
   }
 
+  // 父目录更新条目
   if(dirlink(dp, name, ip->inum) < 0)
     goto fail;
-
+  // 父目录更新nlink
   if(type == T_DIR){
     // now that success is guaranteed:
     dp->nlink++;  // for ".."
@@ -301,6 +314,37 @@ create(char *path, short type, short major, short minor)
   return 0;
 }
 
+
+// 软连接
+// 相当于快捷方式, 在这个文件中存的是目标文件的路径, 而与inode无关
+uint64
+sys_symlink(void)
+{
+  char target[MAXPATH], path[MAXPATH];
+  struct inode *ip;
+
+  if(argstr(0, target, MAXPATH) < 0 || argstr(1, path, MAXPATH) < 0)
+  {
+    return -1;
+  }
+  
+  begin_op();
+  if((ip = create(path, T_SYMLINK, 0, 0)) == 0) {
+    end_op();
+    return -1;
+  }
+
+  // 把target写到文件里
+  if (writei(ip, 0, (uint64)target, 0, MAXPATH) != MAXPATH) {
+    end_op();
+    return -1;
+  }
+  iunlockput(ip);
+  end_op();
+  return 0;
+
+}
+
 uint64
 sys_open(void)
 {
@@ -317,17 +361,21 @@ sys_open(void)
   begin_op();
 
   if(omode & O_CREATE){
+    // 设备号到底是什么?????
+    // open只能创建FILE文件
     ip = create(path, T_FILE, 0, 0);
     if(ip == 0){
       end_op();
       return -1;
     }
   } else {
+    // namei不拿锁, create会拿锁, 这里自己要拿锁
     if((ip = namei(path)) == 0){
       end_op();
       return -1;
     }
     ilock(ip);
+    // 已经存在的目录文件只可读
     if(ip->type == T_DIR && omode != O_RDONLY){
       iunlockput(ip);
       end_op();
@@ -341,6 +389,34 @@ sys_open(void)
     return -1;
   }
 
+  // NOFOLLOW: 表示打开软连接文件本身
+  // 否则: 打开target
+  if(ip->type == T_SYMLINK && !(omode & O_NOFOLLOW))
+  {
+    char target[MAXPATH];
+
+    // 可能是多层软连接
+    for(int i = 0; ip->type == T_SYMLINK; i++)
+    {
+      if(i == 10) 
+      {
+        iunlockput(ip);
+        end_op();
+        return -1;
+      }
+      readi(ip, 0, (uint64) target, 0, MAXPATH);
+      iunlockput(ip);
+      if ((ip = namei(target))==0) 
+      {
+        end_op();
+        return -1;
+      }
+      ilock(ip);
+    }
+  }
+
+
+  // 分配file和fd
   if((f = filealloc()) == 0 || (fd = fdalloc(f)) < 0){
     if(f)
       fileclose(f);
@@ -349,6 +425,7 @@ sys_open(void)
     return -1;
   }
 
+  // 除了DEVICE都是INODE
   if(ip->type == T_DEVICE){
     f->type = FD_DEVICE;
     f->major = ip->major;
@@ -474,6 +551,7 @@ sys_exec(void)
   return -1;
 }
 
+// 给pipe提供了文件描述符的抽象, 没有真正的disk
 uint64
 sys_pipe(void)
 {
