@@ -24,9 +24,10 @@ struct superblock {
 
 #define FSMAGIC 0x10203040
 
-#define NDIRECT 12 // => 一个inode有12个直接块
+#define NDIRECT 11 // => 一个inode有12个直接块
 #define NINDIRECT (BSIZE / sizeof(uint)) // => 1个间接块, 这个块里存了块地址
-#define MAXFILE (NDIRECT + NINDIRECT)
+#define NINDIRECT2 NINDIRECT * NINDIRECT
+#define MAXFILE (NDIRECT + NINDIRECT + NINDIRECT2)
 
 // On-disk inode structure
 // disk上的数据结构, 内存保存的inode信息更多
@@ -41,7 +42,7 @@ struct dinode {
   // 多少目录的entry引用该inode, 等于0时表示释放该inode和data
   short nlink;          // Number of links to inode in file system
   uint size;            // Size of file (bytes)
-  uint addrs[NDIRECT+1];   // Data block addresses
+  uint addrs[NDIRECT+2];   // Data block addresses
 };
 
 // Inodes per block.
