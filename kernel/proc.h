@@ -81,6 +81,25 @@ struct trapframe {
 
 enum procstate { UNUSED, USED, SLEEPING, RUNNABLE, RUNNING, ZOMBIE };
 
+
+// 用VMA实现的简单mmap, 限制/缺点如下:
+// VMA不是动态分配的
+// offset一定是0, munmap的len一定是整页
+// 从虚拟地址顶部向下分配, 没有回收, 有内存泄漏的风险(即vma_top一直递减)
+// 如果要实现回收虚拟空间, 这会很复杂, 就像malloc一样, 需要考虑维护地址空间
+#define VMA_MAX 16
+struct VMA
+{
+  int valid; 
+  uint64 addr;  
+  int len;
+  int prot;
+  int flags;
+  int off;
+  struct file* f;
+  uint64 mapcnt;
+};
+
 // Per-process state
 struct proc {
   struct spinlock lock;
@@ -104,4 +123,8 @@ struct proc {
   struct file *ofile[NOFILE];  // Open files
   struct inode *cwd;           // Current directory
   char name[16];               // Process name (debugging)
+
+  // mmap
+  struct VMA vma[VMA_MAX];
+  uint64 vma_top;
 };

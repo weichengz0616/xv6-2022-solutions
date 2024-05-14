@@ -503,3 +503,103 @@ sys_pipe(void)
   }
   return 0;
 }
+
+
+// void *mmap(void *addr, int length, int prot, int flags,
+//            int fd, int offset);
+// int munmap(void *addr, int length);
+uint64 sys_mmap(void)
+{
+  uint64 addr;
+  int len, prot, flags, fd, offset;
+  argaddr(0, &addr);
+  argint(1, &len);
+  argint(2, &prot);
+  argint(3, &flags);
+  argint(4, &fd);
+  argint(5, &offset);
+
+  struct proc* p = myproc();
+  struct file* f = p->ofile[fd];
+
+  // 检查权限
+  if(f->writable == 0 && (prot & PROT_WRITE) && flags == MAP_SHARED)
+  {
+    return -1;
+  }
+
+  struct VMA* empty = 0;
+  for(empty = &(p->vma[0]); empty < &(p->vma[0]) + VMA_MAX; empty++)
+  {
+    if(empty->valid == 0)
+      break;
+  }
+
+  if(empty == &(p->vma[0]) + VMA_MAX)
+  {
+    printf("no more vma...\n");
+    return -1;
+  }
+
+  p->vma_top -= len;
+  empty->valid = 1;
+  empty->addr = p->vma_top;
+  empty->len = len;
+  empty->prot = prot;
+  empty->flags = flags;
+  empty->f = f;
+  empty->off = offset;
+  empty->mapcnt = 0;
+  filedup(f);
+
+  return empty->addr;
+}
+
+uint64 sys_munmap(void)
+{
+  uint64 addr;
+  int len;
+  argaddr(0, &addr);
+  argint(1, &len);
+  struct proc* p = myproc();
+
+  // 限制啊, 否则写文件挺麻烦的
+  if(addr % PGSIZE || len % PGSIZE)
+    return -1;
+
+  struct VMA* vmap = 0;
+  for(int i = 0;i < VMA_MAX;i++)
+  {
+    if(p->vma[i].valid && addr >= p->vma[i].addr && addr < p->vma[i].addr + p->vma[i].len)
+    {
+      vmap = &(p->vma[i]);
+      break;
+    }
+  }
+
+  if(vmap == 0)
+  {
+    printf("munmap no vma...\n");
+    return -1;
+  }
+
+  if(walkaddr(p->pagetable, addr))
+  {
+    if(vmap->flags == MAP_SHARED)
+    {
+      filewrite_off(vmap->f, addr, len, addr - vmap->addr);
+    }
+    // addr是整的, len也是整的
+    uvmunmap(p->pagetable, addr, len / PGSIZE, 1);
+    return 0;
+  }
+
+  vmap->mapcnt -= len;
+  if(vmap->mapcnt == 0)
+  {
+    fileclose(vmap->f);
+    vmap->valid = 0;
+  }
+
+  return 0;
+}

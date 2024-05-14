@@ -5,6 +5,7 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "defs.h"
+#include "fcntl.h"
 
 struct cpu cpus[NCPU];
 
@@ -146,6 +147,11 @@ found:
   p->context.ra = (uint64)forkret;
   p->context.sp = p->kstack + PGSIZE;
 
+  for(int i = 0;i < VMA_MAX;i++)
+  {
+    p->vma[i].valid = 0;
+  }
+  p->vma_top = MAXVA - 2 * PGSIZE;
   return p;
 }
 
@@ -322,6 +328,17 @@ fork(void)
   np->state = RUNNABLE;
   release(&np->lock);
 
+  // copy VMA
+  np->vma_top = p->vma_top;
+  for(int i = 0;i < VMA_MAX;i++)
+  {
+    if(p->vma[i].valid)
+    {
+      filedup(p->vma[i].f);
+      memmove(&np->vma[i], &p->vma[i], sizeof(struct VMA));
+    }
+  }
+
   return pid;
 }
 
@@ -350,6 +367,27 @@ exit(int status)
 
   if(p == initproc)
     panic("init exiting");
+
+  // unmap VMA
+  for(int i = 0;i < VMA_MAX;i++)
+  {
+    if(p->vma[i].valid)
+    {
+      p->vma[i].valid = 0;
+      struct VMA* vmap = &(p->vma[i]);
+
+      for(uint64 addr = vmap->addr; addr < vmap->addr + vmap->len; addr += PGSIZE)
+      {
+        if(walkaddr(p->pagetable, addr))
+        {
+          if(vmap->flags == MAP_SHARED)
+            filewrite_off(vmap->f, addr, PGSIZE, addr - vmap->addr);
+          uvmunmap(p->pagetable, addr, 1, 1);
+        }
+      }
+      fileclose(p->vma[i].f);
+    }
+  }
 
   // Close all open files.
   for(int fd = 0; fd < NOFILE; fd++){
